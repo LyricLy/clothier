@@ -685,20 +685,21 @@ void show_token(ParseState *p, Token start, Token start_hl, Token end_hl) {
     if (start_hl.type == LINE_SEP) start_hl.line--;
     if (end_hl.type == LINE_SEP) end_hl.line--;
 
+    bool tty = isatty(fileno(stderr));
     Vec(str) lines = p->lexer->lines;
     for (idx_t line = start.line; line < end_hl.line+1; line++) {
         eprintf("%4d | ", line+1);
         char *line_str = lines->buf.data[line];
         for (idx_t column = 0; line_str[column] != '\n'; column++) {
-            if (isatty(fileno(stderr)) && line == start_hl.line && column == start_hl.start_column) {
+            if (tty && line == start_hl.line && column == start_hl.start_column) {
                 eprintf("\033[0;1;91m");
             }
             fputc(line_str[column], stderr);
-            if (isatty(fileno(stdout)) && line == end_hl.line && (column == end_hl.end_column)) {
+            if (tty && line == end_hl.line && (column == end_hl.end_column)) {
                 eprintf("\033[0m");
             }
         }
-        eprintf("\033[0m\n");
+        if (tty) eprintf("\033[0m\n");
     }
 
     if (start_hl.line == end_hl.line) {
@@ -1627,13 +1628,13 @@ bool eval_cond(Symbol *s, Vec(Symbol_p) frame) {
         // consider keeping a match data object for longer if it's a performance concern
         pcre2_match_data *md = pcre2_match_data_create(1, NULL);
         int r = pcre2_match(
-              e.regex.regex
-            , (unsigned char *) e.regex.fabric->fab_data.data->buf.data
-            , e.regex.fabric->fab_data.data->length
-            , 0
-            , 0
-            , md
-            , NULL
+            e.regex.regex,
+            (unsigned char *) e.regex.fabric->fab_data.data->buf.data,
+            e.regex.fabric->fab_data.data->length,
+            0,
+            0,
+            md,
+            NULL
         );
         pcre2_match_data_free(md);
         // this might bite
