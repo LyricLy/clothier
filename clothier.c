@@ -699,7 +699,8 @@ void show_token(ParseState *p, Token start, Token start_hl, Token end_hl) {
                 eprintf("\033[0m");
             }
         }
-        if (tty) eprintf("\033[0m\n");
+        if (tty) eprintf("\033[0m");
+        eprintf("\n");
     }
 
     if (start_hl.line == end_hl.line) {
