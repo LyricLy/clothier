@@ -1666,7 +1666,7 @@ bool cond_value(Symbol *s, Vec(Symbol_p) frame) {
     return eval_cond(s, frame);
 }
 
-void extend_alter_replacement(Vec(char) out, Command cmd, size_t *ovector, pcre2_code *regex, Vec(char) source) {
+void extend_alter_replacement(Vec(char) out, Command cmd, PCRE2_SIZE *ovector, uint32_t ovector_len, pcre2_code *regex, Vec(char) source) {
     Vec(char) rep = cmd.alter.replacement.data;
     for (idx_t i = 0; i < rep->length; i++) {
         char c = rep->buf.data[i];
@@ -1683,7 +1683,7 @@ void extend_alter_replacement(Vec(char) out, Command cmd, size_t *ovector, pcre2
 
                 idx_t n;
                 unsigned int amount_read;
-                if (sscanf(&rep->buf.data[start], "%d%n", &n, &amount_read) && rep->buf.data[start+amount_read] == '>') {
+                if (sscanf(&rep->buf.data[start], "%d%n", &n, &amount_read) && rep->buf.data[start+amount_read] == '>' && (uint32_t) n < ovector_len) {
                     group_num = n;
                     i = start+amount_read;
                 } else {
@@ -1703,7 +1703,7 @@ void extend_alter_replacement(Vec(char) out, Command cmd, size_t *ovector, pcre2
                 idx_t start = i+1;
                 idx_t n;
                 unsigned int amount_read;
-                if (sscanf(&rep->buf.data[start], "%d%n", &n, &amount_read)) {
+                if (sscanf(&rep->buf.data[start], "%d%n", &n, &amount_read) && (uint32_t) n < ovector_len) {
                     group_num = n;
                     i += amount_read;
                 } else {
@@ -1712,7 +1712,9 @@ void extend_alter_replacement(Vec(char) out, Command cmd, size_t *ovector, pcre2
                 }
             }
 
-            vec_extend(char, out, &source->buf.data[ovector[group_num*2]], ovector[group_num*2+1]-ovector[group_num*2]);
+            if (ovector[group_num*2] != PCRE2_UNSET) {
+                vec_extend(char, out, &source->buf.data[ovector[group_num*2]], ovector[group_num*2+1]-ovector[group_num*2]);
+            }
         } else {
             vec_append(char, out, c);
         }
@@ -1904,7 +1906,7 @@ InterpretResult interpret_command(Command cmd, Vec(Symbol_p) frame) {
             out_vec = target->fab_data.data;
         }
 
-        pcre2_match_data *md = pcre2_match_data_create(1, NULL);
+        pcre2_match_data *md = pcre2_match_data_create_from_pattern(cmd.copy_regex.regex, NULL);
         idx_t offset = 0;
         do {
             int m = pcre2_match(
@@ -1919,7 +1921,14 @@ InterpretResult interpret_command(Command cmd, Vec(Symbol_p) frame) {
             if (m < 0) break;
 
             PCRE2_SIZE *v = pcre2_get_ovector_pointer(md);
-            vec_extend(char, out_vec, &source->fab_data.data->buf.data[v[0]], v[1] - v[0]);
+            uint32_t c = pcre2_get_ovector_count(md);
+            if (c == 1) {
+                vec_extend(char, out_vec, &source->fab_data.data->buf.data[v[0]], v[1] - v[0]);
+            } else {
+                for (uint32_t i = 1; i < c; i++) {
+                    vec_extend(char, out_vec, &source->fab_data.data->buf.data[v[i*2]], v[i*2+1] - v[i*2]);
+                }
+            }
             offset = v[1];
         } while (cmd.copy_regex.flags.global);
         pcre2_match_data_free(md);
@@ -2042,14 +2051,15 @@ InterpretResult interpret_command(Command cmd, Vec(Symbol_p) frame) {
                 NULL
             );
             if (r < 0) break;
-            size_t *ovector = pcre2_get_ovector_pointer(md);
+            PCRE2_SIZE *ovector = pcre2_get_ovector_pointer(md);
+            uint32_t ovector_len = pcre2_get_ovector_count(md);
             vec_extend(char, out, &data->fab_data.data->buf.data[offset], ovector[0]-offset);
             if (!cmd.alter.flags.prepend && !cmd.alter.flags.append) {
-                extend_alter_replacement(out, cmd, ovector, cmd.alter.regex, data->fab_data.data);
+                extend_alter_replacement(out, cmd, ovector, ovector_len, cmd.alter.regex, data->fab_data.data);
             } else {
-                if (cmd.alter.flags.prepend) extend_alter_replacement(out, cmd, ovector, cmd.alter.regex, data->fab_data.data);
+                if (cmd.alter.flags.prepend) extend_alter_replacement(out, cmd, ovector, ovector_len, cmd.alter.regex, data->fab_data.data);
                 vec_extend(char, out, &data->fab_data.data->buf.data[ovector[0]], ovector[1]-ovector[0]);
-                if (cmd.alter.flags.append) extend_alter_replacement(out, cmd, ovector, cmd.alter.regex, data->fab_data.data);
+                if (cmd.alter.flags.append) extend_alter_replacement(out, cmd, ovector, ovector_len, cmd.alter.regex, data->fab_data.data);
             }
             offset = ovector[1];
         } while (cmd.alter.flags.global);
