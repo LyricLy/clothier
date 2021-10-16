@@ -1705,7 +1705,7 @@ void extend_alter_replacement(Vec(char) out, Command cmd, size_t *ovector, pcre2
                 unsigned int amount_read;
                 if (sscanf(&rep->buf.data[start], "%d%n", &n, &amount_read)) {
                     group_num = n;
-                    i = start+amount_read;
+                    i += amount_read;
                 } else {
                     vec_append(char, out, '\\');
                     continue;
