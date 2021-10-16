@@ -1316,7 +1316,7 @@ ParseResult parse_command(ParseState *s, Token *bloody_mary) {
             Token target;
             if (expect(IDENT, "a fabric", source)) {
                 Flags flags;
-                if (parse_optional_flags(as, &flags, ADD_FLAGS)) {
+                if (parse_optional_flags(as, &flags, ADD_FLAGS | GLOBAL_FLAG)) {
                     Token regex;
                     if (expect(REGEX, "a regex", regex = parse_consume(s))
                      && expect(IDENT, "a fabric", target = parse_consume(s))  
@@ -1906,7 +1906,7 @@ InterpretResult interpret_command(Command cmd, Vec(Symbol_p) frame) {
 
         pcre2_match_data *md = pcre2_match_data_create(1, NULL);
         idx_t offset = 0;
-        while (true) {
+        do {
             int m = pcre2_match(
                 cmd.copy_regex.regex,
                 (unsigned char *) source->fab_data.data->buf.data,
@@ -1921,7 +1921,7 @@ InterpretResult interpret_command(Command cmd, Vec(Symbol_p) frame) {
             PCRE2_SIZE *v = pcre2_get_ovector_pointer(md);
             vec_extend(char, out_vec, &source->fab_data.data->buf.data[v[0]], v[1] - v[0]);
             offset = v[1];
-        }
+        } while (cmd.copy_regex.flags.global);
         pcre2_match_data_free(md);
 
         if (flags.prepend) {
