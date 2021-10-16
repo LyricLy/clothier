@@ -1666,6 +1666,59 @@ bool cond_value(Symbol *s, Vec(Symbol_p) frame) {
     return eval_cond(s, frame);
 }
 
+void extend_alter_replacement(Vec(char) out, Command cmd, size_t *ovector, pcre2_code *regex, Vec(char) source) {
+    Vec(char) rep = cmd.alter.replacement.data;
+    for (idx_t i = 0; i < rep->length; i++) {
+        char c = rep->buf.data[i];
+        if (c == '\\') {
+            idx_t group_num;
+
+            char nc = rep->buf.data[i+1];
+            if (nc == '\\') {
+                i += 1;
+                vec_append(char, out, '\\');
+                continue;
+            } else if (nc == '<') {
+                idx_t start = i+2;
+
+                idx_t n;
+                unsigned int amount_read;
+                if (sscanf(&rep->buf.data[start], "%d%n", &n, &amount_read) && rep->buf.data[start+amount_read] == '>') {
+                    group_num = n;
+                    i = start+amount_read;
+                } else {
+                    char *p = strchr(&rep->buf.data[start], '>');
+                    char c = *p;
+                    *p = '\0';
+                    int r = pcre2_substring_number_from_name(regex, (unsigned char *) &rep->buf.data[start]);
+                    *p = c;
+                    if (r < 0) {
+                        vec_append(char, out, '\\');
+                        continue;
+                    }
+                    group_num = r;
+                    i = p - rep->buf.data;
+                }
+            } else {
+                idx_t start = i+1;
+                idx_t n;
+                unsigned int amount_read;
+                if (sscanf(&rep->buf.data[start], "%d%n", &n, &amount_read)) {
+                    group_num = n;
+                    i = start+amount_read;
+                } else {
+                    vec_append(char, out, '\\');
+                    continue;
+                }
+            }
+
+            vec_extend(char, out, &source->buf.data[ovector[group_num*2]], ovector[group_num*2+1]-ovector[group_num*2]);
+        } else {
+            vec_append(char, out, c);
+        }
+    }
+}
+
 typedef enum InterpretResult {
     OK,
     PROC_EXIT,
@@ -1705,7 +1758,7 @@ InterpretResult interpret_command(Command cmd, Vec(Symbol_p) frame) {
       case SeeNotch:
         // TODO
         break;
-      case Hem:
+      case Hem: {
         Symbol *s = cmd.sym;
         acquire(s, frame);
         Vec(char) out = vec_init(char, 0);
@@ -1765,6 +1818,7 @@ InterpretResult interpret_command(Command cmd, Vec(Symbol_p) frame) {
         vec_destroy(char, s->fab_data.data);
         s->fab_data.data = out;
         break;
+      }
       case Cond: {
         Symbol *name = cmd.cond.name;
         acquire(name, frame);
@@ -1836,7 +1890,7 @@ InterpretResult interpret_command(Command cmd, Vec(Symbol_p) frame) {
         target->fab_data.data = vec_copy(char, source->fab_data.data);
         break;
       }
-      case CopyRegex:
+      case CopyRegex: {
         Symbol *target = cmd.copy_regex.target;
         Symbol *source = cmd.copy_regex.source;
         Flags flags = cmd.copy_regex.flags;
@@ -1888,6 +1942,7 @@ InterpretResult interpret_command(Command cmd, Vec(Symbol_p) frame) {
             target->fab_data.data = out_vec;
         }
         break;
+      }
       case TypeDec: {
         Symbol *data = cmd.type_dec.name;
         if (is_known(data)) break;
@@ -1971,48 +2026,48 @@ InterpretResult interpret_command(Command cmd, Vec(Symbol_p) frame) {
         break;
       }
       case Alter: {
-        // TODO: -a and -p
-        // TODO: fix compatiblity issue with $1 vs \1
         Symbol *data = cmd.alter.data;
         acquire(data, frame);
-        idx_t l = data->fab_data.data->length * 2;
-        char *buffer = malloc(l);
-        while (true) {
-            int e = pcre2_substitute(
+        Vec(char) out = vec_init(char, 0);
+        pcre2_match_data *md = pcre2_match_data_create_from_pattern(cmd.alter.regex, NULL);
+        size_t offset = 0;
+        do {
+            int r = pcre2_match(
                 cmd.alter.regex,
                 (unsigned char *) data->fab_data.data->buf.data,
                 data->fab_data.data->length,
+                offset,
                 0,
-                ( PCRE2_SUBSTITUTE_OVERFLOW_LENGTH
-                | (cmd.alter.flags.global ? PCRE2_SUBSTITUTE_GLOBAL : 0)
-                ),
-                NULL,
-                NULL,
-                (unsigned char *) cmd.alter.replacement.data->buf.data,
-                cmd.alter.replacement.data->length,
-                (unsigned char *) buffer,
-                (PCRE2_SIZE *) &l
+                md,
+                NULL
             );
-            if (e < 0 && e != PCRE2_ERROR_NOMEMORY) {
-                free(buffer);
-                goto give_up;
+            if (r < 0) break;
+            size_t *ovector = pcre2_get_ovector_pointer(md);
+            vec_extend(char, out, &data->fab_data.data->buf.data[offset], ovector[0]-offset);
+            if (!cmd.alter.flags.prepend && !cmd.alter.flags.append) {
+                extend_alter_replacement(out, cmd, ovector, cmd.alter.regex, data->fab_data.data);
+            } else {
+                if (cmd.alter.flags.prepend) extend_alter_replacement(out, cmd, ovector, cmd.alter.regex, data->fab_data.data);
+                vec_extend(char, out, &data->fab_data.data->buf.data[ovector[0]], ovector[1]-ovector[0]);
+                if (cmd.alter.flags.append) extend_alter_replacement(out, cmd, ovector, cmd.alter.regex, data->fab_data.data);
             }
-            buffer = realloc(buffer, l);
-            if (e != PCRE2_ERROR_NOMEMORY) break;
-        }
-        data->fab_data.data->buf = (RawVec(char)) { .capacity = l, .data = buffer };
-        data->fab_data.data->length = l;
-        give_up:
+            offset = ovector[1];
+        } while (cmd.alter.flags.global);
+        vec_extend(char, out, &data->fab_data.data->buf.data[offset], data->fab_data.data->length-offset);
+        vec_destroy(char, data->fab_data.data);
+        data->fab_data.data = out;
+        pcre2_match_data_free(md);
         break;
       }
-      case Procedure:
+      case Procedure: {
         Symbol *name = cmd.proc.name;
         if (is_known(name)) break;
         acquire(name, frame);
         name->proc_args = cmd.proc.args;
         name->proc_code = cmd.proc.code;
         break;
-      case Call:
+      }
+      case Call: {
         Symbol *func = cmd.call.name;
         acquire(func, frame);
         // call the symbols from the procedure's perspective "procedure arguments", and from the caller's perspective "call arguments"
@@ -2039,6 +2094,7 @@ InterpretResult interpret_command(Command cmd, Vec(Symbol_p) frame) {
             cmd.proc.args->buf.data[i]->fab_data.data = vec_copy(char, func->proc_args->buf.data[i]->fab_data.data);
         }
         break;
+      }
       case Variation:
         interpret_new_frame(cmd.variation.code);
         if (cmd.variation.all_const) break;
