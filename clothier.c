@@ -29,16 +29,6 @@
 #include <locale.h>
 #include <errno.h>
 
-void *safe_malloc(size_t n) {
-    void *p = malloc(n);
-    if (p == NULL) {
-        perror("Allocation error");
-        exit(1);
-    }
-    return p;
-}
-#define malloc safe_malloc
-
 bool warn = false;
 bool recurse_warn = false;
 bool repl = false;
@@ -595,7 +585,7 @@ typedef struct CondExpr {
 typedef struct _vecSymbol_p *_vectorSymbol_p;
 typedef struct Symbol {
     char *name;
-    enum { FREE, BOUND, CONST } defined;
+    enum { FREE, BOUND, BOUND_ARG, CONST } defined;
     bool is_read;
     SymbolType type;
     Token defined_by;
@@ -2039,7 +2029,7 @@ InterpretResult interpret_command(Command cmd, Vec(Symbol_p) frame) {
         acquire(data, frame);
         Vec(char) out = vec_init(char, 0);
         pcre2_match_data *md = pcre2_match_data_create_from_pattern(cmd.alter.regex, NULL);
-        size_t offset = 0;
+        idx_t offset = 0;
         do {
             int r = pcre2_match(
                 cmd.alter.regex,
@@ -2086,7 +2076,7 @@ InterpretResult interpret_command(Command cmd, Vec(Symbol_p) frame) {
         for (idx_t i = 0; i < func->proc_args->length; i++) {  // ignore additional arguments
             Symbol *arg = func->proc_args->buf.data[i];
             if (arg->defined != FREE) continue;
-            acquire(arg, frame);
+            arg->defined = BOUND_ARG;
             if (i < cmd.proc.args->length) {
                 arg->fab_data.data = vec_copy(char, cmd.proc.args->buf.data[i]->fab_data.data);
             } else {
@@ -2101,7 +2091,13 @@ InterpretResult interpret_command(Command cmd, Vec(Symbol_p) frame) {
 
         // copy back modified fabrics
         for (idx_t i = 0; i < func->proc_args->length && i < cmd.proc.args->length; i++) {
-            cmd.proc.args->buf.data[i]->fab_data.data = vec_copy(char, func->proc_args->buf.data[i]->fab_data.data);
+            Symbol *arg = func->proc_args->buf.data[i];
+            if (arg->defined == BOUND_ARG) {
+                arg->defined = FREE;
+                Symbol *call_arg = cmd.proc.args->buf.data[i];
+                vec_destroy(char, call_arg->fab_data.data);
+                call_arg->fab_data.data = vec_copy(char, arg->fab_data.data);
+            }
         }
         break;
       }
@@ -2133,7 +2129,7 @@ InterpretResult interpret_new_frame(Vec(Command) code) {
     for (idx_t i = 0; i < frame->length; i++) {
         Symbol *sym = frame->buf.data[i];
         sym->defined = FREE;
-        if (sym->type == FAB) free(sym->fab_data.data);
+        if (sym->type == FAB) vec_destroy(char, sym->fab_data.data);
         else if (sym->type == TYPE) vec_destroy(TailorStr, sym->type_strs);
     }
     if (r == PROC_EXIT) return OK;
